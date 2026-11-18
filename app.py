@@ -341,12 +341,30 @@ async def services():
         """
     ).fetchone()
 
+    group_rows = conn.execute(
+        "select service_id, group_id from service_groups order by group_id"
+    ).fetchall()
+
     conn.close()
+
+    groups_by_service = {}
+
+    for row in group_rows:
+        groups_by_service.setdefault(row["service_id"], []).append(
+            row["group_id"]
+        )
+
+    services = []
+
+    for row in rows:
+        service = dict(row)
+        service["groups"] = groups_by_service.get(service["id"], [])
+        services.append(service)
 
     return JSONResponse(
         {
             "stats": dict(stats),
-            "services": [dict(x) for x in rows]
+            "services": services
         }
     )
 
@@ -497,23 +515,6 @@ def groups():
     r.raise_for_status()
 
     return JSONResponse(r.json())
-
-
-@app.get("/api/service/{service_id}/groups")
-async def service_groups(service_id: str):
-
-    conn = db()
-
-    group_ids = get_group_ids(conn, service_id)
-
-    conn.close()
-
-    return JSONResponse(
-        {
-            "service_id": service_id,
-            "groups": group_ids
-        }
-    )
 
 
 @app.post("/api/service/{service_id}/groups")

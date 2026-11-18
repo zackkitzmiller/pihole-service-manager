@@ -224,3 +224,13 @@ def test_same_site_post_is_allowed(client, pihole):
     result = client.post("/api/toggle/tiktok", headers=same)
 
     assert result.json()["success"] is True
+
+
+def test_service_list_includes_groups(client):
+    client.post("/api/service/tiktok/groups", json={"groups": [3, 1]})
+
+    services = client.get("/api/services").json()["services"]
+    by_id = {s["id"]: s for s in services}
+
+    assert by_id["tiktok"]["groups"] == [1, 3]
+    assert by_id["douyin"]["groups"] == []

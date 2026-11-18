@@ -1,6 +1,5 @@
 let services = [];
 let groups = [];
-let serviceGroups = {};
 
 let currentCategory = "all";
 let activeOnly = false;
@@ -47,26 +46,6 @@ async function load() {
     draw();
 }
 
-async function loadServiceGroups(serviceId){
-
-    if(serviceGroups[serviceId]){
-        return serviceGroups[serviceId];
-    }
-
-    const response =
-        await fetch(
-            `/api/service/${serviceId}/groups`
-        );
-
-    const data =
-        await response.json();
-
-    serviceGroups[serviceId] =
-        data.groups || [];
-
-    return serviceGroups[serviceId];
-}
-
 async function saveServiceGroups(
     serviceId,
     groupsList
@@ -97,8 +76,9 @@ async function saveServiceGroups(
         );
     }
 
-    serviceGroups[serviceId] =
-        groupsList;
+    services.find(
+        x => x.id === serviceId
+    ).groups = groupsList;
 }
 
 function categoryLabel(category){
@@ -503,7 +483,6 @@ function draw(){
                         </div>
 
                         <div class="groups-info">
-                            Loading...
                         </div>
 
                         <button class="groups-btn">
@@ -540,35 +519,30 @@ function draw(){
                 )
         );
 
-        loadServiceGroups(
-            service.id
-        ).then(selected => {
+        const names =
+            groups
+                .filter(
+                    g =>
+                        service.groups.includes(
+                            g.id
+                        )
+                )
+                .map(
+                    g => g.name
+                );
 
-            const names =
-                groups
-                    .filter(
-                        g =>
-                            selected.includes(
-                                g.id
-                            )
-                    )
-                    .map(
-                        g => g.name
-                    );
-
-            card.querySelector(
-                ".groups-info"
-            ).textContent =
-                names.length
-                ? "Groups: " +
-                  names.join(", ")
-                : "Groups: None";
-        });
+        card.querySelector(
+            ".groups-info"
+        ).textContent =
+            names.length
+            ? "Groups: " +
+              names.join(", ")
+            : "Groups: None";
 
         card.querySelector(
             ".groups-btn"
         ).onclick =
-        async () => {
+        () => {
 
             let editor =
                 card.querySelector(
@@ -583,9 +557,7 @@ function draw(){
             }
 
             const selected =
-                await loadServiceGroups(
-                    service.id
-                );
+                service.groups;
 
             editor =
                 document.createElement(
