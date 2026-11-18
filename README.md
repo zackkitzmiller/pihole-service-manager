@@ -126,6 +126,16 @@ docker compose build
 
 docker compose up -d
 
+## Development
+
+pip install -r requirements-dev.txt
+
+pytest
+
+ruff check .
+
+The tests use a fake Pi-hole, so no real Pi-hole is needed.
+
 ## Technology Stack
 
 - FastAPI
