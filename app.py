@@ -1,9 +1,10 @@
 import os
 import sqlite3
 import subprocess
+from typing import Annotated
 
 import requests
-from fastapi import FastAPI, Request
+from fastapi import Body, FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -170,6 +171,16 @@ def pihole_request(method: str, path: str, **kwargs) -> requests.Response:
 COMMENT = "Service Manager V3"
 
 
+def is_enabled(conn: sqlite3.Connection, service_id: str) -> bool:
+
+    row = conn.execute(
+        "select enabled from state where service_id = ?",
+        (service_id,)
+    ).fetchone()
+
+    return bool(row and row["enabled"])
+
+
 def wanted_groups(conn: sqlite3.Connection, domain: str) -> list[int]:
     """Groups that should block `domain`: the union over every enabled
     service that lists it. Empty means nothing should block it."""
@@ -297,12 +308,7 @@ def toggle(service_id: str):
 
     try:
 
-        state = conn.execute(
-            "select enabled from state where service_id = ?",
-            (service_id,)
-        ).fetchone()
-
-        new_state = not (state and state["enabled"])
+        new_state = not is_enabled(conn, service_id)
 
         if new_state:
             conn.execute(
@@ -441,12 +447,10 @@ async def service_groups(service_id: str):
 
 
 @app.post("/api/service/{service_id}/groups")
-async def save_service_groups(
+def save_service_groups(
     service_id: str,
-    request: Request
+    data: Annotated[dict, Body()]
 ):
-
-    data = await request.json()
 
     groups = data.get("groups", [])
 
@@ -467,7 +471,7 @@ async def save_service_groups(
 
             conn.execute(
                 """
-                insert into service_groups(
+                insert or ignore into service_groups(
                     service_id,
                     group_id
                 )
@@ -478,6 +482,10 @@ async def save_service_groups(
                     int(group_id)
                 )
             )
+
+        # A blocked service must move to its new groups right away.
+        if is_enabled(conn, service_id):
+            sync_domains(conn, get_domains(conn, service_id))
 
         conn.commit()
 

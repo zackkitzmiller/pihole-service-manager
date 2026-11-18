@@ -151,3 +151,20 @@ def test_expired_session_logs_in_again_once(client, pihole, monkeypatch):
 
     assert toggle(client, "tiktok")["success"] is True
     assert pihole.calls[:2] == [("GET", DENY), ("GET", DENY)]
+
+
+def test_saving_groups_moves_a_blocked_service(client, pihole):
+    toggle(client, "tiktok")
+
+    saved = client.post("/api/service/tiktok/groups", json={"groups": [2]})
+
+    assert saved.json()["success"] is True
+    assert pihole.deny["tiktok.com"]["groups"] == [2]
+
+
+def test_saving_groups_for_unblocked_service_leaves_pihole_alone(
+    client, pihole
+):
+    client.post("/api/service/tiktok/groups", json={"groups": [2]})
+
+    assert pihole.calls == []
