@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import html
 import os
 import sqlite3
 from datetime import UTC, datetime
@@ -10,8 +9,6 @@ import requests
 DB_FILE = os.getenv("DB_FILE", "data/app.db")
 
 URL = "https://adguardteam.github.io/HostlistsRegistry/assets/services.json"
-
-ICONS_DIR = "static/icons"
 
 
 def rule_to_domain(rule: str) -> str:
@@ -24,8 +21,6 @@ def rule_to_domain(rule: str) -> str:
 
     return rule.replace("||", "", 1).split("^")[0].strip()
 
-
-os.makedirs(ICONS_DIR, exist_ok=True)
 
 print("Downloading services.json...")
 
@@ -76,13 +71,6 @@ for svc in services:
 
         domain_count += 1
 
-    svg = svc.get("icon_svg")
-
-    if svg:
-        icon_path = os.path.join(ICONS_DIR, f"{service_id}.svg")
-        with open(icon_path, "w", encoding="utf-8") as f:
-            f.write(html.unescape(svg))
-
 meta = {
     "source": "HostlistsRegistry",
     # Naive UTC timestamp, same format as the old datetime.utcnow().
@@ -109,4 +97,3 @@ print()
 print("Catalog updated successfully")
 print(f"Services : {service_count}")
 print(f"Domains  : {domain_count}")
-print(f"Icons    : {service_count}")

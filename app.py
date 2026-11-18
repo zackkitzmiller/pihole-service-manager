@@ -4,9 +4,8 @@ import subprocess
 
 import requests
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 app = FastAPI()
 
@@ -14,10 +13,6 @@ app.mount(
     "/static",
     StaticFiles(directory="static"),
     name="static"
-)
-
-templates = Jinja2Templates(
-    directory="templates"
 )
 
 DB_FILE = os.getenv("DB_FILE", "data/app.db")
@@ -177,13 +172,9 @@ def pihole_request(method: str, path: str, **kwargs) -> requests.Response:
 
 
 @app.get("/")
-async def index(request: Request):
+def index():
 
-    return templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={}
-    )
+    return FileResponse("templates/index.html")
 
 
 @app.get("/api/services")
