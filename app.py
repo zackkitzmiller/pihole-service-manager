@@ -73,9 +73,7 @@ def init_db() -> None:
 init_db()
 
 
-def get_domains(service_id: str) -> list[str]:
-
-    conn = db()
+def get_domains(conn: sqlite3.Connection, service_id: str) -> list[str]:
 
     rows = conn.execute(
         """
@@ -87,9 +85,7 @@ def get_domains(service_id: str) -> list[str]:
         (service_id,)
     ).fetchall()
 
-    conn.close()
-
-    return [x["domain"] for x in rows]
+    return [row["domain"] for row in rows]
 
 
 def get_group_ids(conn: sqlite3.Connection, service_id: str) -> list[int]:
@@ -171,6 +167,67 @@ def pihole_request(method: str, path: str, **kwargs) -> requests.Response:
     return r
 
 
+COMMENT = "Service Manager V3"
+
+
+def wanted_groups(conn: sqlite3.Connection, domain: str) -> list[int]:
+    """Groups that should block `domain`: the union over every enabled
+    service that lists it. Empty means nothing should block it."""
+
+    rows = conn.execute(
+        """
+        select distinct sd.service_id
+        from service_domains sd
+        join state st on st.service_id = sd.service_id
+        where sd.domain = ? and st.enabled = 1
+        """,
+        (domain,)
+    ).fetchall()
+
+    groups = set()
+
+    for row in rows:
+        # Pi-hole's "Default" group (id 0) when none are assigned.
+        groups.update(get_group_ids(conn, row["service_id"]) or [0])
+
+    return sorted(groups)
+
+
+def sync_domains(conn: sqlite3.Connection, domains) -> None:
+    """Make Pi-hole's exact deny list match the enabled services for
+    `domains`. Entries this app did not create are never changed."""
+
+    r = pihole_request("GET", "domains/deny/exact")
+    r.raise_for_status()
+
+    existing = {entry["domain"]: entry for entry in r.json()["domains"]}
+
+    for domain in sorted(set(domains)):
+
+        entry = existing.get(domain)
+
+        if entry and entry.get("comment") != COMMENT:
+            continue
+
+        groups = wanted_groups(conn, domain)
+
+        if groups:
+            if entry and entry["enabled"] and sorted(entry["groups"]) == groups:
+                continue
+
+            r = pihole_request(
+                "PUT",
+                f"domains/deny/exact/{domain}",
+                json={"comment": COMMENT, "groups": groups, "enabled": True}
+            )
+        elif entry:
+            r = pihole_request("DELETE", f"domains/deny/exact/{domain}")
+        else:
+            continue
+
+        r.raise_for_status()
+
+
 @app.get("/")
 def index():
 
@@ -241,62 +298,32 @@ def toggle(service_id: str):
     try:
 
         state = conn.execute(
-            """
-            select enabled
-            from state
-            where service_id = ?
-            """,
+            "select enabled from state where service_id = ?",
             (service_id,)
         ).fetchone()
 
-        enabled = bool(state["enabled"]) if state else False
+        new_state = not (state and state["enabled"])
 
-        domains = get_domains(service_id)
-
-        # Pi-hole's "Default" group (id 0) when none are assigned.
-        groups = get_group_ids(conn, service_id) or [0]
-
-        if enabled:
-
+        if new_state:
             conn.execute(
                 """
-                delete
-                from state
-                where service_id = ?
-                """,
-                (service_id,)
-            )
-
-            for domain in domains:
-                pihole_request("DELETE", f"domains/deny/exact/{domain}")
-
-            new_state = False
-
-        else:
-
-            conn.execute(
-                """
-                insert into state(service_id,enabled)
-                values(?,1)
-
+                insert into state(service_id, enabled)
+                values(?, 1)
                 on conflict(service_id)
                 do update set enabled=1
                 """,
                 (service_id,)
             )
+        else:
+            conn.execute(
+                "delete from state where service_id = ?",
+                (service_id,)
+            )
 
-            for domain in domains:
-                pihole_request(
-                    "POST",
-                    "domains/deny/exact",
-                    json={
-                        "domain": domain,
-                        "groups": groups,
-                        "comment": "Service Manager V3"
-                    }
-                )
+        domains = get_domains(conn, service_id)
 
-            new_state = True
+        # Pi-hole first: if it fails, the rollback below keeps the old state.
+        sync_domains(conn, domains)
 
         conn.commit()
 
