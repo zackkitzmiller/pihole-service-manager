@@ -1,14 +1,50 @@
 import os
+import secrets
 import sqlite3
 import subprocess
 from typing import Annotated
+from urllib.parse import urlsplit
 
 import requests
-from fastapi import Body, FastAPI
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI()
+APP_PASSWORD = os.getenv("APP_PASSWORD")
+
+basic_auth = HTTPBasic()
+
+
+def require_auth(
+    request: Request,
+    credentials: Annotated[HTTPBasicCredentials, Depends(basic_auth)]
+) -> None:
+    """Every page and API call needs the app password (any username)."""
+
+    if not APP_PASSWORD:
+        raise HTTPException(500, "APP_PASSWORD is not set in .env")
+
+    if not secrets.compare_digest(
+        credentials.password.encode(), APP_PASSWORD.encode()
+    ):
+        raise HTTPException(
+            401, "Wrong password", headers={"WWW-Authenticate": "Basic"}
+        )
+
+    # Browsers resend saved Basic credentials on cross-site form posts,
+    # so also refuse writes that come from another site's page.
+    origin = request.headers.get("origin")
+
+    if (
+        request.method != "GET"
+        and origin
+        and urlsplit(origin).netloc != request.headers.get("host")
+    ):
+        raise HTTPException(403, "Cross-site request refused")
+
+
+app = FastAPI(dependencies=[Depends(require_auth)])
 
 app.mount(
     "/static",

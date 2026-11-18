@@ -7,6 +7,7 @@ import tempfile
 import pytest
 import requests
 
+os.environ["APP_PASSWORD"] = "secret"
 os.environ["DB_FILE"] = os.path.join(tempfile.mkdtemp(), "app.db")
 
 from fastapi.testclient import TestClient
@@ -95,7 +96,9 @@ def client():
     )
     conn.commit()
     conn.close()
-    return TestClient(app.app)
+    test_client = TestClient(app.app)
+    test_client.auth = ("admin", "secret")
+    return test_client
 
 
 def toggle(client, service_id):
@@ -199,3 +202,25 @@ def test_catalog_update_unblocks_dropped_domains_and_services(
     assert set(pihole.deny) == {"shared.com", "tiktokv.com"}
     stats = client.get("/api/services").json()["stats"]
     assert stats["enabled"] == 1
+
+
+def test_requests_without_the_password_are_refused(client):
+    assert client.get("/", auth=("admin", "wrong")).status_code == 401
+    assert TestClient(app.app).get("/api/services").status_code == 401
+
+
+def test_cross_site_post_is_refused(client, pihole):
+    evil = {"Origin": "http://evil.example"}
+
+    result = client.post("/api/toggle/tiktok", headers=evil)
+
+    assert result.status_code == 403
+    assert pihole.calls == []
+
+
+def test_same_site_post_is_allowed(client, pihole):
+    same = {"Origin": "http://testserver"}
+
+    result = client.post("/api/toggle/tiktok", headers=same)
+
+    assert result.json()["success"] is True
