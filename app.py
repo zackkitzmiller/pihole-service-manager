@@ -20,7 +20,7 @@ templates = Jinja2Templates(
     directory="templates"
 )
 
-DB_FILE = "data/app.db"
+DB_FILE = os.getenv("DB_FILE", "data/app.db")
 
 PIHOLE_URL = os.getenv("PIHOLE_URL")
 PIHOLE_PASSWORD = os.getenv("PIHOLE_PASSWORD")
@@ -28,10 +28,54 @@ PIHOLE_PASSWORD = os.getenv("PIHOLE_PASSWORD")
 PIHOLE_SID = None
 
 
+SCHEMA = """
+create table if not exists services(
+    id text primary key,
+    name text not null,
+    category text not null
+);
+
+create table if not exists service_domains(
+    service_id text not null,
+    domain text not null
+);
+
+create index if not exists service_domains_service_id
+    on service_domains(service_id);
+
+create table if not exists state(
+    service_id text primary key,
+    enabled integer not null default 1
+);
+
+create table if not exists service_groups(
+    service_id text not null,
+    group_id integer not null,
+    primary key(service_id, group_id)
+);
+
+create table if not exists catalog_meta(
+    key text primary key,
+    value text
+);
+"""
+
+
 def db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def init_db() -> None:
+    os.makedirs(os.path.dirname(DB_FILE) or ".", exist_ok=True)
+
+    conn = db()
+    conn.executescript(SCHEMA)
+    conn.close()
+
+
+init_db()
 
 
 def get_domains(service_id: str) -> list[str]:

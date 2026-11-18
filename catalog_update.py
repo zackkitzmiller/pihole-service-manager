@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import requests
 
-DB_FILE = "data/app.db"
+DB_FILE = os.getenv("DB_FILE", "data/app.db")
 
 URL = "https://adguardteam.github.io/HostlistsRegistry/assets/services.json"
 
