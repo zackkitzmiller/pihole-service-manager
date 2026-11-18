@@ -89,6 +89,19 @@ async function saveServiceGroups(
     ).groups = groupsList;
 }
 
+// Names come from the AdGuard feed and from Pi-hole; never run them as HTML.
+function escapeHtml(text){
+
+    const div =
+        document.createElement(
+            "div"
+        );
+
+    div.textContent = text;
+
+    return div.innerHTML;
+}
+
 function categoryLabel(category){
 
     return (
@@ -393,7 +406,7 @@ function addCategoryHeader(
         <div class="category-separator">
             <div class="category-line"></div>
             <div class="category-title">
-                ${categoryLabel(category)}
+                ${escapeHtml(categoryLabel(category))}
             </div>
             <div class="category-line"></div>
         </div>
@@ -480,11 +493,11 @@ function draw(){
                     <div class="info">
 
                         <div class="title">
-                            ${service.name}
+                            ${escapeHtml(service.name)}
                         </div>
 
                         <div class="meta">
-                            ${categoryLabel(service.category)}
+                            ${escapeHtml(categoryLabel(service.category))}
                             •
                             ${service.domain_count}
                             domains
@@ -585,7 +598,7 @@ function draw(){
                                 ? "checked"
                                 : ""
                             }>
-                        ${g.name}
+                        ${escapeHtml(g.name)}
                     </label>
                 `).join("")
                 +
