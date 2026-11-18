@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 
 import pytest
@@ -168,3 +169,33 @@ def test_saving_groups_for_unblocked_service_leaves_pihole_alone(
     client.post("/api/service/tiktok/groups", json={"groups": [2]})
 
     assert pihole.calls == []
+
+
+def test_catalog_update_unblocks_dropped_domains_and_services(
+    client, pihole, monkeypatch
+):
+    toggle(client, "tiktok")
+    toggle(client, "douyin")
+
+    def fake_catalog_update(*args, **kwargs):
+        conn = sqlite3.connect(app.DB_FILE)
+        conn.executescript(
+            """
+            delete from services where id = 'douyin';
+            delete from service_domains where service_id = 'douyin';
+            delete from service_domains where domain = 'tiktok.com';
+            insert into service_domains values ('tiktok', 'tiktokv.com');
+            """
+        )
+        conn.commit()
+        conn.close()
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(app.subprocess, "run", fake_catalog_update)
+
+    result = client.post("/api/catalog/update").json()
+
+    assert result["success"] is True
+    assert set(pihole.deny) == {"shared.com", "tiktokv.com"}
+    stats = client.get("/api/services").json()["stats"]
+    assert stats["enabled"] == 1

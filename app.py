@@ -181,6 +181,20 @@ def is_enabled(conn: sqlite3.Connection, service_id: str) -> bool:
     return bool(row and row["enabled"])
 
 
+def enabled_domains(conn: sqlite3.Connection) -> set[str]:
+
+    rows = conn.execute(
+        """
+        select sd.domain
+        from service_domains sd
+        join state st on st.service_id = sd.service_id
+        where st.enabled = 1
+        """
+    ).fetchall()
+
+    return {row["domain"] for row in rows}
+
+
 def wanted_groups(conn: sqlite3.Connection, domain: str) -> list[int]:
     """Groups that should block `domain`: the union over every enabled
     service that lists it. Empty means nothing should block it."""
@@ -362,11 +376,15 @@ def toggle(service_id: str):
 @app.post("/api/catalog/update")
 def catalog_update():
 
+    conn = db()
+
     try:
+
+        blocked_before = enabled_domains(conn)
 
         result = subprocess.run(
             ["python3", "catalog_update.py"],
-            cwd="/app",
+            cwd=os.path.dirname(os.path.abspath(__file__)),
             capture_output=True,
             check=False,
             text=True,
@@ -383,13 +401,23 @@ def catalog_update():
                 status_code=500
             )
 
-        conn = db()
+        # A service dropped from the catalog can no longer be switched
+        # off in the UI, so stop blocking it now.
+        conn.execute(
+            """
+            delete from state
+            where service_id not in (select id from services)
+            """
+        )
+
+        # Unblock domains the catalog dropped; block ones it added.
+        sync_domains(conn, blocked_before | enabled_domains(conn))
+
+        conn.commit()
 
         rows = conn.execute("select key, value from catalog_meta").fetchall()
 
         meta = {row["key"]: row["value"] for row in rows}
-
-        conn.close()
 
         services_count = meta.get("services_count", "0")
         domains_count = meta.get("domains_count", "0")
@@ -410,6 +438,8 @@ def catalog_update():
 
     except Exception as ex:  # noqa: BLE001 - report any failure as JSON
 
+        conn.rollback()
+
         return JSONResponse(
             {
                 "success": False,
@@ -417,6 +447,10 @@ def catalog_update():
             },
             status_code=500
         )
+
+    finally:
+
+        conn.close()
 
 
 @app.get("/api/groups")
