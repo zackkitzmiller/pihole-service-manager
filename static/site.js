@@ -1,6 +1,5 @@
 let services = [];
 let groups = [];
-let serviceGroups = {};
 
 let currentCategory = "all";
 let activeOnly = false;
@@ -22,14 +21,22 @@ const CATEGORY_NAMES = {
 
 async function load() {
 
-    const groupsResponse =
-        await fetch("/api/groups");
+    // Pi-hole being down must not hide the services list.
+    try{
 
-    const groupsData =
-        await groupsResponse.json();
+        const groupsResponse =
+            await fetch("/api/groups");
 
-    groups =
-        groupsData.groups || [];
+        const groupsData =
+            await groupsResponse.json();
+
+        groups =
+            groupsData.groups || [];
+    }
+    catch(ex){
+
+        groups = [];
+    }
 
     const response =
         await fetch("/api/services");
@@ -45,26 +52,6 @@ async function load() {
     buildCategories();
 
     draw();
-}
-
-async function loadServiceGroups(serviceId){
-
-    if(serviceGroups[serviceId]){
-        return serviceGroups[serviceId];
-    }
-
-    const response =
-        await fetch(
-            `/api/service/${serviceId}/groups`
-        );
-
-    const data =
-        await response.json();
-
-    serviceGroups[serviceId] =
-        data.groups || [];
-
-    return serviceGroups[serviceId];
 }
 
 async function saveServiceGroups(
@@ -97,8 +84,22 @@ async function saveServiceGroups(
         );
     }
 
-    serviceGroups[serviceId] =
-        groupsList;
+    services.find(
+        x => x.id === serviceId
+    ).groups = groupsList;
+}
+
+// Names come from the AdGuard feed and from Pi-hole; never run them as HTML.
+function escapeHtml(text){
+
+    const div =
+        document.createElement(
+            "div"
+        );
+
+    div.textContent = text;
+
+    return div.innerHTML;
 }
 
 function categoryLabel(category){
@@ -273,33 +274,20 @@ function buildCategories(){
 
 function selectActive(button){
 
-    activeOnly = true;
-    currentCategory = "all";
-
-    document
-        .querySelectorAll(
-            ".category-btn"
-        )
-        .forEach(
-            x =>
-                x.classList.remove(
-                    "active"
-                )
-        );
-
-    button.classList.add(
-        "active"
+    selectCategory(
+        "all",
+        button,
+        true
     );
-
-    draw();
 }
 
 function selectCategory(
     category,
-    button
+    button,
+    onlyActive = false
 ){
 
-    activeOnly = false;
+    activeOnly = onlyActive;
 
     currentCategory =
         category;
@@ -405,7 +393,7 @@ function addCategoryHeader(
         <div class="category-separator">
             <div class="category-line"></div>
             <div class="category-title">
-                ${categoryLabel(category)}
+                ${escapeHtml(categoryLabel(category))}
             </div>
             <div class="category-line"></div>
         </div>
@@ -492,18 +480,17 @@ function draw(){
                     <div class="info">
 
                         <div class="title">
-                            ${service.name}
+                            ${escapeHtml(service.name)}
                         </div>
 
                         <div class="meta">
-                            ${categoryLabel(service.category)}
+                            ${escapeHtml(categoryLabel(service.category))}
                             •
                             ${service.domain_count}
                             domains
                         </div>
 
                         <div class="groups-info">
-                            Loading...
                         </div>
 
                         <button class="groups-btn">
@@ -540,35 +527,27 @@ function draw(){
                 )
         );
 
-        loadServiceGroups(
-            service.id
-        ).then(selected => {
+        // No groups chosen means Pi-hole's Default group (id 0).
+        const names =
+            service.groups.length
+            ? service.groups.map(
+                id =>
+                    groups.find(
+                        g => g.id === id
+                    )?.name ?? `#${id}`
+            )
+            : ["Default"];
 
-            const names =
-                groups
-                    .filter(
-                        g =>
-                            selected.includes(
-                                g.id
-                            )
-                    )
-                    .map(
-                        g => g.name
-                    );
-
-            card.querySelector(
-                ".groups-info"
-            ).textContent =
-                names.length
-                ? "Groups: " +
-                  names.join(", ")
-                : "Groups: None";
-        });
+        card.querySelector(
+            ".groups-info"
+        ).textContent =
+            "Groups: " +
+            names.join(", ");
 
         card.querySelector(
             ".groups-btn"
         ).onclick =
-        async () => {
+        () => {
 
             let editor =
                 card.querySelector(
@@ -583,9 +562,7 @@ function draw(){
             }
 
             const selected =
-                await loadServiceGroups(
-                    service.id
-                );
+                service.groups;
 
             editor =
                 document.createElement(
@@ -608,7 +585,7 @@ function draw(){
                                 ? "checked"
                                 : ""
                             }>
-                        ${g.name}
+                        ${escapeHtml(g.name)}
                     </label>
                 `).join("")
                 +
@@ -643,10 +620,22 @@ function draw(){
                                 )
                         );
 
-                    await saveServiceGroups(
-                        service.id,
-                        values
-                    );
+                    try{
+
+                        await saveServiceGroups(
+                            service.id,
+                            values
+                        );
+                    }
+                    catch(ex){
+
+                        showToast(
+                            ex.message,
+                            false
+                        );
+
+                        return;
+                    }
 
                     showToast(
                         "Groups saved"
