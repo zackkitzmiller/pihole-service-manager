@@ -527,25 +527,22 @@ function draw(){
                 )
         );
 
+        // No groups chosen means Pi-hole's Default group (id 0).
         const names =
-            groups
-                .filter(
-                    g =>
-                        service.groups.includes(
-                            g.id
-                        )
-                )
-                .map(
-                    g => g.name
-                );
+            service.groups.length
+            ? service.groups.map(
+                id =>
+                    groups.find(
+                        g => g.id === id
+                    )?.name ?? `#${id}`
+            )
+            : ["Default"];
 
         card.querySelector(
             ".groups-info"
         ).textContent =
-            names.length
-            ? "Groups: " +
-              names.join(", ")
-            : "Groups: None";
+            "Groups: " +
+            names.join(", ");
 
         card.querySelector(
             ".groups-btn"
@@ -623,10 +620,22 @@ function draw(){
                                 )
                         );
 
-                    await saveServiceGroups(
-                        service.id,
-                        values
-                    );
+                    try{
+
+                        await saveServiceGroups(
+                            service.id,
+                            values
+                        );
+                    }
+                    catch(ex){
+
+                        showToast(
+                            ex.message,
+                            false
+                        );
+
+                        return;
+                    }
 
                     showToast(
                         "Groups saved"
