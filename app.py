@@ -1,14 +1,50 @@
 import os
+import secrets
 import sqlite3
 import subprocess
+from typing import Annotated
+from urllib.parse import urlsplit
 
 import requests
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
-app = FastAPI()
+APP_PASSWORD = os.getenv("APP_PASSWORD")
+
+basic_auth = HTTPBasic()
+
+
+def require_auth(
+    request: Request,
+    credentials: Annotated[HTTPBasicCredentials, Depends(basic_auth)]
+) -> None:
+    """Every page and API call needs the app password (any username)."""
+
+    if not APP_PASSWORD:
+        raise HTTPException(500, "APP_PASSWORD is not set in .env")
+
+    if not secrets.compare_digest(
+        credentials.password.encode(), APP_PASSWORD.encode()
+    ):
+        raise HTTPException(
+            401, "Wrong password", headers={"WWW-Authenticate": "Basic"}
+        )
+
+    # Browsers resend saved Basic credentials on cross-site form posts,
+    # so also refuse writes that come from another site's page.
+    origin = request.headers.get("origin")
+
+    if (
+        request.method != "GET"
+        and origin
+        and urlsplit(origin).netloc != request.headers.get("host")
+    ):
+        raise HTTPException(403, "Cross-site request refused")
+
+
+app = FastAPI(dependencies=[Depends(require_auth)])
 
 app.mount(
     "/static",
@@ -16,16 +52,45 @@ app.mount(
     name="static"
 )
 
-templates = Jinja2Templates(
-    directory="templates"
-)
-
-DB_FILE = "data/app.db"
+DB_FILE = os.getenv("DB_FILE", "data/app.db")
 
 PIHOLE_URL = os.getenv("PIHOLE_URL")
 PIHOLE_PASSWORD = os.getenv("PIHOLE_PASSWORD")
 
 PIHOLE_SID = None
+
+
+SCHEMA = """
+create table if not exists services(
+    id text primary key,
+    name text not null,
+    category text not null
+);
+
+create table if not exists service_domains(
+    service_id text not null,
+    domain text not null
+);
+
+create index if not exists service_domains_service_id
+    on service_domains(service_id);
+
+create table if not exists state(
+    service_id text primary key,
+    enabled integer not null default 1
+);
+
+create table if not exists service_groups(
+    service_id text not null,
+    group_id integer not null,
+    primary key(service_id, group_id)
+);
+
+create table if not exists catalog_meta(
+    key text primary key,
+    value text
+);
+"""
 
 
 def db() -> sqlite3.Connection:
@@ -34,9 +99,18 @@ def db() -> sqlite3.Connection:
     return conn
 
 
-def get_domains(service_id: str) -> list[str]:
+def init_db() -> None:
+    os.makedirs(os.path.dirname(DB_FILE) or ".", exist_ok=True)
 
     conn = db()
+    conn.executescript(SCHEMA)
+    conn.close()
+
+
+init_db()
+
+
+def get_domains(conn: sqlite3.Connection, service_id: str) -> list[str]:
 
     rows = conn.execute(
         """
@@ -48,9 +122,7 @@ def get_domains(service_id: str) -> list[str]:
         (service_id,)
     ).fetchall()
 
-    conn.close()
-
-    return [x["domain"] for x in rows]
+    return [row["domain"] for row in rows]
 
 
 def get_group_ids(conn: sqlite3.Connection, service_id: str) -> list[int]:
@@ -132,14 +204,95 @@ def pihole_request(method: str, path: str, **kwargs) -> requests.Response:
     return r
 
 
-@app.get("/")
-async def index(request: Request):
+COMMENT = "Service Manager V3"
 
-    return templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={}
-    )
+
+def is_enabled(conn: sqlite3.Connection, service_id: str) -> bool:
+
+    row = conn.execute(
+        "select enabled from state where service_id = ?",
+        (service_id,)
+    ).fetchone()
+
+    return bool(row and row["enabled"])
+
+
+def enabled_domains(conn: sqlite3.Connection) -> set[str]:
+
+    rows = conn.execute(
+        """
+        select sd.domain
+        from service_domains sd
+        join state st on st.service_id = sd.service_id
+        where st.enabled = 1
+        """
+    ).fetchall()
+
+    return {row["domain"] for row in rows}
+
+
+def wanted_groups(conn: sqlite3.Connection, domain: str) -> list[int]:
+    """Groups that should block `domain`: the union over every enabled
+    service that lists it. Empty means nothing should block it."""
+
+    rows = conn.execute(
+        """
+        select distinct sd.service_id
+        from service_domains sd
+        join state st on st.service_id = sd.service_id
+        where sd.domain = ? and st.enabled = 1
+        """,
+        (domain,)
+    ).fetchall()
+
+    groups = set()
+
+    for row in rows:
+        # Pi-hole's "Default" group (id 0) when none are assigned.
+        groups.update(get_group_ids(conn, row["service_id"]) or [0])
+
+    return sorted(groups)
+
+
+def sync_domains(conn: sqlite3.Connection, domains) -> None:
+    """Make Pi-hole's exact deny list match the enabled services for
+    `domains`. Entries this app did not create are never changed."""
+
+    r = pihole_request("GET", "domains/deny/exact")
+    r.raise_for_status()
+
+    existing = {entry["domain"]: entry for entry in r.json()["domains"]}
+
+    for domain in sorted(set(domains)):
+
+        entry = existing.get(domain)
+
+        if entry and entry.get("comment") != COMMENT:
+            continue
+
+        groups = wanted_groups(conn, domain)
+
+        if groups:
+            if entry and entry["enabled"] and sorted(entry["groups"]) == groups:
+                continue
+
+            r = pihole_request(
+                "PUT",
+                f"domains/deny/exact/{domain}",
+                json={"comment": COMMENT, "groups": groups, "enabled": True}
+            )
+        elif entry:
+            r = pihole_request("DELETE", f"domains/deny/exact/{domain}")
+        else:
+            continue
+
+        r.raise_for_status()
+
+
+@app.get("/")
+def index():
+
+    return FileResponse("templates/index.html")
 
 
 @app.get("/api/services")
@@ -188,12 +341,30 @@ async def services():
         """
     ).fetchone()
 
+    group_rows = conn.execute(
+        "select service_id, group_id from service_groups order by group_id"
+    ).fetchall()
+
     conn.close()
+
+    groups_by_service = {}
+
+    for row in group_rows:
+        groups_by_service.setdefault(row["service_id"], []).append(
+            row["group_id"]
+        )
+
+    services = []
+
+    for row in rows:
+        service = dict(row)
+        service["groups"] = groups_by_service.get(service["id"], [])
+        services.append(service)
 
     return JSONResponse(
         {
             "stats": dict(stats),
-            "services": [dict(x) for x in rows]
+            "services": services
         }
     )
 
@@ -205,63 +376,28 @@ def toggle(service_id: str):
 
     try:
 
-        state = conn.execute(
-            """
-            select enabled
-            from state
-            where service_id = ?
-            """,
-            (service_id,)
-        ).fetchone()
+        new_state = not is_enabled(conn, service_id)
 
-        enabled = bool(state["enabled"]) if state else False
-
-        domains = get_domains(service_id)
-
-        # Pi-hole's "Default" group (id 0) when none are assigned.
-        groups = get_group_ids(conn, service_id) or [0]
-
-        if enabled:
-
+        if new_state:
             conn.execute(
                 """
-                delete
-                from state
-                where service_id = ?
-                """,
-                (service_id,)
-            )
-
-            for domain in domains:
-                pihole_request("DELETE", f"domains/deny/exact/{domain}")
-
-            new_state = False
-
-        else:
-
-            conn.execute(
-                """
-                insert into state(service_id,enabled)
-                values(?,1)
-
+                insert into state(service_id, enabled)
+                values(?, 1)
                 on conflict(service_id)
                 do update set enabled=1
                 """,
                 (service_id,)
             )
+        else:
+            conn.execute(
+                "delete from state where service_id = ?",
+                (service_id,)
+            )
 
-            for domain in domains:
-                pihole_request(
-                    "POST",
-                    "domains/deny/exact",
-                    json={
-                        "domain": domain,
-                        "groups": groups,
-                        "comment": "Service Manager V3"
-                    }
-                )
+        domains = get_domains(conn, service_id)
 
-            new_state = True
+        # Pi-hole first: if it fails, the rollback below keeps the old state.
+        sync_domains(conn, domains)
 
         conn.commit()
 
@@ -294,11 +430,15 @@ def toggle(service_id: str):
 @app.post("/api/catalog/update")
 def catalog_update():
 
+    conn = db()
+
     try:
+
+        blocked_before = enabled_domains(conn)
 
         result = subprocess.run(
             ["python3", "catalog_update.py"],
-            cwd="/app",
+            cwd=os.path.dirname(os.path.abspath(__file__)),
             capture_output=True,
             check=False,
             text=True,
@@ -315,13 +455,23 @@ def catalog_update():
                 status_code=500
             )
 
-        conn = db()
+        # A service dropped from the catalog can no longer be switched
+        # off in the UI, so stop blocking it now.
+        conn.execute(
+            """
+            delete from state
+            where service_id not in (select id from services)
+            """
+        )
+
+        # Unblock domains the catalog dropped; block ones it added.
+        sync_domains(conn, blocked_before | enabled_domains(conn))
+
+        conn.commit()
 
         rows = conn.execute("select key, value from catalog_meta").fetchall()
 
         meta = {row["key"]: row["value"] for row in rows}
-
-        conn.close()
 
         services_count = meta.get("services_count", "0")
         domains_count = meta.get("domains_count", "0")
@@ -342,6 +492,8 @@ def catalog_update():
 
     except Exception as ex:  # noqa: BLE001 - report any failure as JSON
 
+        conn.rollback()
+
         return JSONResponse(
             {
                 "success": False,
@@ -349,6 +501,10 @@ def catalog_update():
             },
             status_code=500
         )
+
+    finally:
+
+        conn.close()
 
 
 @app.get("/api/groups")
@@ -361,30 +517,11 @@ def groups():
     return JSONResponse(r.json())
 
 
-@app.get("/api/service/{service_id}/groups")
-async def service_groups(service_id: str):
-
-    conn = db()
-
-    group_ids = get_group_ids(conn, service_id)
-
-    conn.close()
-
-    return JSONResponse(
-        {
-            "service_id": service_id,
-            "groups": group_ids
-        }
-    )
-
-
 @app.post("/api/service/{service_id}/groups")
-async def save_service_groups(
+def save_service_groups(
     service_id: str,
-    request: Request
+    data: Annotated[dict, Body()]
 ):
-
-    data = await request.json()
 
     groups = data.get("groups", [])
 
@@ -405,7 +542,7 @@ async def save_service_groups(
 
             conn.execute(
                 """
-                insert into service_groups(
+                insert or ignore into service_groups(
                     service_id,
                     group_id
                 )
@@ -416,6 +553,10 @@ async def save_service_groups(
                     int(group_id)
                 )
             )
+
+        # A blocked service must move to its new groups right away.
+        if is_enabled(conn, service_id):
+            sync_domains(conn, get_domains(conn, service_id))
 
         conn.commit()
 

@@ -96,11 +96,19 @@ PIHOLE_URL=http://YOUR_PIHOLE_IP
 
 PIHOLE_PASSWORD=YOUR_PIHOLE_PASSWORD
 
+APP_PASSWORD=CHOOSE_A_PASSWORD_FOR_THIS_APP
+
 Example:
 
 PIHOLE_URL=http://192.168.1.10
 
 PIHOLE_PASSWORD=my_secret_password
+
+APP_PASSWORD=another_secret
+
+APP_PASSWORD protects the web page. The browser asks for it once; any
+username works. Without it, anyone on your network could unblock
+services.
 
 Start:
 
@@ -117,6 +125,16 @@ git pull
 docker compose build
 
 docker compose up -d
+
+## Development
+
+pip install -r requirements-dev.txt
+
+pytest
+
+ruff check .
+
+The tests use a fake Pi-hole, so no real Pi-hole is needed.
 
 ## Technology Stack
 

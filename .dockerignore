@@ -1,0 +1,11 @@
+.env
+.env.*
+data/
+.git/
+.github/
+.claude/
+.rtk/
+.ruff_cache/
+__pycache__/
+tests/
+docs/
