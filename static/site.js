@@ -274,33 +274,20 @@ function buildCategories(){
 
 function selectActive(button){
 
-    activeOnly = true;
-    currentCategory = "all";
-
-    document
-        .querySelectorAll(
-            ".category-btn"
-        )
-        .forEach(
-            x =>
-                x.classList.remove(
-                    "active"
-                )
-        );
-
-    button.classList.add(
-        "active"
+    selectCategory(
+        "all",
+        button,
+        true
     );
-
-    draw();
 }
 
 function selectCategory(
     category,
-    button
+    button,
+    onlyActive = false
 ){
 
-    activeOnly = false;
+    activeOnly = onlyActive;
 
     currentCategory =
         category;
