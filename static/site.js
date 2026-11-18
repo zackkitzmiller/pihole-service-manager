@@ -21,14 +21,22 @@ const CATEGORY_NAMES = {
 
 async function load() {
 
-    const groupsResponse =
-        await fetch("/api/groups");
+    // Pi-hole being down must not hide the services list.
+    try{
 
-    const groupsData =
-        await groupsResponse.json();
+        const groupsResponse =
+            await fetch("/api/groups");
 
-    groups =
-        groupsData.groups || [];
+        const groupsData =
+            await groupsResponse.json();
+
+        groups =
+            groupsData.groups || [];
+    }
+    catch(ex){
+
+        groups = [];
+    }
 
     const response =
         await fetch("/api/services");
